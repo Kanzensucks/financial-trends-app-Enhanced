@@ -224,12 +224,16 @@ chart.
 ├── charts.py                    # Plotly figures
 ├── ai_layer.py                  # Groq LLM integration
 ├── styles.py                    # Custom CSS
+├── valuation.py                 # Valuation tab (DCF engine) — added
 ├── requirements.txt             # Python dependencies
 ├── .streamlit/
 │   ├── config.toml              # Streamlit theme
 │   ├── secrets.toml             # Your API keys (create this)
 │   └── secrets.toml.example     # Template for the above
-└── .cache/                      # Auto-created; contains cached downloads
+├── .cache/                      # Auto-created; contains cached downloads
+└── data/                        # Auto-created; contains valuation logs
+    ├── valuation_log.csv        # Log of every DCF run
+    └── eval_results.csv         # Evaluation results (auto-generated)
 ```
 
 ---
@@ -239,3 +243,150 @@ chart.
 This is a personal project for learning and research. It's not investment
 advice. SEC data is public domain. Groq API usage is governed by Groq's
 terms of service.
+
+---
+
+## Valuation Module — Change Log
+
+All changes live in one new file: `valuation.py`. The only modification
+to the original codebase was adding one import line and one tab entry
+in `app.py`.
+
+---
+
+### What was added
+
+**New dependency**
+
+`yfinance` was added to `requirements.txt`. It fetches live market data
+(price, analyst targets, shares outstanding, cash flow history) directly
+from Yahoo Finance.
+
+---
+
+**New tab: 💰 Valuation**
+
+A sixth tab was added to the right of Raw Data. It is self-contained —
+all logic lives in `valuation.py`.
+
+---
+
+**Live market data banner**
+
+Three cards display at the top of the tab for any valid ticker:
+
+| Card | Source | Notes |
+|------|--------|-------|
+| Live Price | yfinance `currentPrice` | Refreshed every 10 minutes |
+| Analyst Consensus | yfinance `targetMeanPrice` | Mean of all covering analysts |
+| Analyst Verdict | Derived | UNDER if target >10% above price, OVER if >10% below, else FAIR |
+
+Both the Analyst Consensus and Analyst Verdict cards have an **ⓘ tooltip**
+showing the data source and the exact number of analysts covering that
+stock (e.g. `Yahoo Finance / 42 analysts`). The count comes from
+`numberOfAnalystOpinions` — it is the real figure for that ticker, not
+an estimate.
+
+---
+
+**DCF calculator**
+
+Function: `calculate_dcf(fcf_history, shares_outstanding, net_debt,
+discount_rate, terminal_growth, years_projected, growth_y1_3, growth_y4_5)`
+
+Method:
+
+1. Project FCF year-by-year — `growth_y1_3` for years 1–3, `growth_y4_5`
+   for years 4 onwards.
+2. Discount each year back to present value at `discount_rate`.
+3. Terminal value via Gordon Growth Model:
+   `TV = FCF_final × (1 + terminal_growth) / (discount_rate − terminal_growth)`
+4. Enterprise value = sum of discounted FCFs + discounted terminal value.
+5. Equity value = enterprise value − net debt.
+6. Fair value per share = equity value ÷ shares outstanding.
+
+Raises `ValueError` if `discount_rate ≤ terminal_growth`.
+
+---
+
+**Five assumption sliders**
+
+| Slider | Range | Default | ⓘ Tooltip |
+|--------|-------|---------|------------|
+| Discount rate (WACC) | 5–15% | 10% | Generic guidance |
+| Terminal growth rate | 0–4% | 2.5% | Generic guidance |
+| Years projected | 3–10 | 5 | Generic guidance |
+| FCF growth — years 1–3 | −5% to 20% | 6% | Stock-specific (from FCF history) |
+| FCF growth — years 4+ | −5% to 15% | 4% | Stock-specific (from FCF history) |
+
+The two FCF growth sliders show stock-specific recommendations derived
+from the ticker's actual historical FCF data fetched via yfinance. The
+suggested near-term rate is a weighted blend of the recent 2-year growth
+and the full historical average (60/40). The suggested long-term rate
+mean-reverts toward 3%.
+
+---
+
+**Results output**
+
+After clicking Calculate, the tab shows:
+
+- **DCF Fair Value** — as an `st.metric` with % delta vs current price
+- **Current Price** — live from yfinance
+- **Verdict** — UNDERVALUED / OVERVALUED / FAIRLY VALUED with colour coding
+- **Sensitivity chart** — Plotly line chart sweeping discount rate 5–15%,
+  with a dashed red line at the current price
+- **AI Insight** — 2–3 sentence plain-English explanation from Groq
+  Llama 3.3 70B, displayed beside the chart. Cached for 1 hour. Hidden
+  if no API key is set.
+
+---
+
+**CSV run logger**
+
+Every successful DCF calculation is appended to `data/valuation_log.csv`
+with columns: `timestamp`, `ticker`, `method`, `fair_value`,
+`current_price`, `verdict`, `analyst_target`, `analyst_verdict`,
+`discount_rate`.
+
+---
+
+**Automated evaluation**
+
+On the first page load of each browser session, a background thread
+silently runs DCF on 30 real US tickers (5 per sector across Technology,
+Healthcare, Consumer, Financials, Energy, and Industrials) using
+standardised default assumptions. Results are written to
+`data/eval_results.csv` with columns: `ticker`, `sector`, `live_price`,
+`dcf_fair_value`, `analyst_target`, `dcf_verdict`, `analyst_verdict`,
+`match`, all DCF assumption parameters, and a `note` for any skipped
+tickers.
+
+**Evaluation methodology:** analyst mean price target (aggregated by
+Yahoo Finance from all covering analysts) is used as ground truth.
+A ticker is scored as a match if the DCF verdict and analyst verdict
+agree. This is an imperfect but immediately available external benchmark.
+Forward returns would be a stronger ground truth but require a 12-month
+lag.
+
+---
+
+### Known limitations
+
+- **DCF is assumption-sensitive.** Small changes to the discount rate or
+  terminal growth rate produce large swings in fair value. The sensitivity
+  chart makes this visible.
+- **Unreliable for certain company types.** Banks, REITs, and insurance
+  companies use different capital structures where free cash flow does not
+  capture value the same way. Early-stage or negative-FCF companies
+  (e.g. high-growth tech) also produce unreliable DCF outputs.
+- **yfinance data quality.** FCF history and analyst targets are sourced
+  from Yahoo Finance via yfinance. Data can be patchy for smaller
+  companies, foreign-listed ADRs, or companies with unusual fiscal years.
+- **Analyst consensus bias.** Using analyst targets as ground truth
+  introduces positive agreement bias — both DCF and analyst models share
+  structural assumptions. The evaluation accuracy figure should be read
+  as agreement rate, not predictive accuracy.
+- **US-listed companies only.** The app sources fundamentals from SEC
+  EDGAR, which only covers US-listed companies. The Valuation tab
+  inherits this constraint.
