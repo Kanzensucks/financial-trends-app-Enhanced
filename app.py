@@ -28,6 +28,7 @@ from charts import ratio_line_chart, trend_chart, ttm_chart, yoy_chart
 from extract import build_all
 from metrics import add_ttm, add_yoy, compute_ratios
 from sec_client import fuzzy_resolve, get_company_facts, load_tickers_map, resolve_ticker
+from valuation import render_valuation_tab
 
 
 # =========================================================================== #
@@ -532,8 +533,8 @@ def pivot_statement_html(
 # 10. Render the five tabs
 # =========================================================================== #
 
-tab_income, tab_balance, tab_cashflow, tab_ratios, tab_raw = st.tabs(
-    ["📈  Income", "🏦  Balance Sheet", "💵  Cash Flow", "📊  Ratios", "🗂  Raw Data"]
+tab_income, tab_balance, tab_cashflow, tab_ratios, tab_raw, tab_valuation = st.tabs(
+    ["📈  Income", "🏦  Balance Sheet", "💵  Cash Flow", "📊  Ratios", "🗂  Raw Data", "💰  Valuation"]
 )
 
 
@@ -756,3 +757,17 @@ with tab_raw:
     with col_csv4:
         if not ratios_view.empty:
             st.download_button("📊 Ratios CSV", ratios_view.to_csv(index=False), file_name=f"{ticker}_ratios.csv", mime="text/csv")
+
+
+# --- Valuation -------------------------------------------------------------- #
+with tab_valuation:
+    render_valuation_tab(
+        ticker=ticker,
+        company_name=display_name,
+        financials_dict={
+            "income": income,
+            "balance": balance,
+            "cashflow": cashflow,
+            "ratios": ratios,
+        },
+    )
