@@ -2,7 +2,7 @@
 
 A web app that lets you type any US stock ticker and instantly see 10 years of quarterly financial data, standard ratios, AI commentary, and a DCF valuation — all in one place.
 
-**Live app:** _[paste your Streamlit URL here after deploying]_
+**Live app:** https://financial-trends-app-enhancedgit-6mnivetctn5a785hnrnx8o.streamlit.app
 
 Inspired by simplywall.st — free, open source, and built for students and retail investors who want to understand a company's financials without paying for a Bloomberg terminal.
 
