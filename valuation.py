@@ -103,9 +103,11 @@ def _fetch_yf(ticker: str) -> dict:
     """
     Fetch live market data from yfinance.
     Returns a dict with keys:
-        live_price, analyst_target, shares_outstanding, net_debt, fcf_history
+        live_price, analyst_target, analyst_low, analyst_high,
+        analyst_count, shares_outstanding, net_debt, fcf_history
     Never raises — missing values are returned as None.
     """
+    import time
     result = {
         "live_price": None,
         "analyst_target": None,
@@ -119,7 +121,14 @@ def _fetch_yf(ticker: str) -> dict:
     try:
         import yfinance as yf
 
-        info = yf.Ticker(ticker).info
+        t = yf.Ticker(ticker.upper())
+
+        # yfinance returns a near-empty dict when rate-limited; retry once
+        info = t.info
+        if not info or len(info) <= 2:
+            time.sleep(2)
+            t = yf.Ticker(ticker.upper())
+            info = t.info
 
         result["live_price"] = info.get("currentPrice") or info.get("regularMarketPrice")
         result["analyst_target"] = info.get("targetMeanPrice")
@@ -132,7 +141,7 @@ def _fetch_yf(ticker: str) -> dict:
         cash = info.get("totalCash") or 0
         result["net_debt"] = total_debt - cash
 
-        cf = yf.Ticker(ticker).cashflow
+        cf = t.cashflow
         if cf is not None and not cf.empty:
             fcf_row = None
             for label in ["Free Cash Flow", "FreeCashFlow"]:
