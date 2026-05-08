@@ -109,6 +109,8 @@ def _fetch_yf(ticker: str) -> dict:
     result = {
         "live_price": None,
         "analyst_target": None,
+        "analyst_low": None,
+        "analyst_high": None,
         "analyst_count": None,
         "shares_outstanding": None,
         "net_debt": None,
@@ -121,6 +123,8 @@ def _fetch_yf(ticker: str) -> dict:
 
         result["live_price"] = info.get("currentPrice") or info.get("regularMarketPrice")
         result["analyst_target"] = info.get("targetMeanPrice")
+        result["analyst_low"] = info.get("targetLowPrice")
+        result["analyst_high"] = info.get("targetHighPrice")
         result["analyst_count"] = info.get("numberOfAnalystOpinions")
         result["shares_outstanding"] = info.get("sharesOutstanding")
 
@@ -493,42 +497,6 @@ def render_valuation_tab(
     # ------------------------------------------------------------------
     st.markdown("#### DCF Assumptions")
 
-    # ------------------------------------------------------------------
-    # Compute historical FCF growth rates from yfinance data
-    # ------------------------------------------------------------------
-    def _fcf_growth_stats(fcf_hist: list) -> dict:
-        """
-        Given FCF history (most recent first), compute:
-          - year-on-year growth rates
-          - average, recent (last 2y), and suggested ranges
-        Returns a dict of stats, or empty dict if insufficient data.
-        """
-        # Need at least 2 values to compute growth
-        clean = [v for v in fcf_hist if v and v != 0]
-        if len(clean) < 2:
-            return {}
-        # yfinance returns most-recent first — reverse for chronological order
-        chron = list(reversed(clean))
-        yoy = []
-        for i in range(1, len(chron)):
-            if chron[i - 1] > 0:  # only meaningful if prior year was positive
-                yoy.append((chron[i] - chron[i - 1]) / chron[i - 1])
-        if not yoy:
-            return {}
-        avg  = sum(yoy) / len(yoy)
-        recent = sum(yoy[-2:]) / len(yoy[-2:]) if len(yoy) >= 2 else yoy[-1]
-        # Suggested near-term: blend recent and average, clamped to sane range
-        suggested_near = max(-0.05, min(0.20, recent * 0.6 + avg * 0.4))
-        suggested_long = max(-0.05, min(0.15, avg * 0.5 + 0.03 * 0.5))
-        return {
-            "n_years": len(yoy),
-            "avg": avg,
-            "recent": recent,
-            "suggested_near": suggested_near,
-            "suggested_long": suggested_long,
-            "yoy": yoy,
-        }
-
     def _info_tooltip(slider_label: str, text: str) -> str:
         """Return a slider label string with an inline ⓘ tooltip icon."""
         return slider_label  # label passed to st.slider directly — tooltip injected separately
@@ -725,7 +693,7 @@ def render_valuation_tab(
                 growth_y4_5=growth_y4_5,
                 current_price=live_price,
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
         with ai_col:
             ai_text = explain_dcf(
@@ -761,6 +729,41 @@ def render_valuation_tab(
             pass
 
 # ---------------------------------------------------------------------------
+# FCF growth stats helper (used by both UI and eval)
+# ---------------------------------------------------------------------------
+
+
+def _fcf_growth_stats(fcf_hist: list) -> dict:
+    """
+    Given FCF history (most recent first), compute suggested growth rates.
+    Returns a dict with suggested_near, suggested_long, avg, recent, n_years, yoy.
+    Returns {} if insufficient data.
+    """
+    clean = [v for v in fcf_hist if v and v != 0]
+    if len(clean) < 2:
+        return {}
+    chron = list(reversed(clean))
+    yoy = []
+    for i in range(1, len(chron)):
+        if chron[i - 1] > 0:
+            yoy.append((chron[i] - chron[i - 1]) / chron[i - 1])
+    if not yoy:
+        return {}
+    avg = sum(yoy) / len(yoy)
+    recent = sum(yoy[-2:]) / len(yoy[-2:]) if len(yoy) >= 2 else yoy[-1]
+    suggested_near = max(-0.05, min(0.20, recent * 0.6 + avg * 0.4))
+    suggested_long = max(-0.05, min(0.15, avg * 0.5 + 0.03 * 0.5))
+    return {
+        "n_years": len(yoy),
+        "avg": avg,
+        "recent": recent,
+        "suggested_near": suggested_near,
+        "suggested_long": suggested_long,
+        "yoy": yoy,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Evaluation engine — Analyst Consensus as Ground Truth
 # ---------------------------------------------------------------------------
 
@@ -768,42 +771,111 @@ EVAL_LOG_PATH = str(Path(__file__).parent / "data" / "eval_results.csv")
 
 EVAL_CSV_HEADER = [
     "timestamp", "ticker", "sector",
-    "live_price", "dcf_fair_value", "analyst_target",
-    "dcf_verdict", "analyst_verdict", "match",
+    "live_price", "dcf_fair_value",
+    "analyst_low", "analyst_high",
+    "dcf_verdict", "in_range", "pct_above_high", "pct_below_low",
     "discount_rate", "terminal_growth", "years_projected",
     "growth_y1_3", "growth_y4_5", "note",
 ]
 
 _EVAL_TICKERS = [
+    # Technology (20)
     "AAPL", "MSFT", "NVDA", "META", "INTC",
+    "GOOGL", "TSLA", "AMD",  "QCOM", "AVGO",
+    "TXN",  "CRM",  "ORCL", "ADBE", "CSCO",
+    "IBM",  "NOW",  "AMAT", "MU",   "INTU",
+    # Healthcare (15)
     "JNJ",  "UNH",  "PFE",  "ABBV", "MRK",
+    "TMO",  "DHR",  "BMY",  "GILD", "AMGN",
+    "CVS",  "MDT",  "SYK",  "ISRG", "ZTS",
+    # Consumer (20)
     "AMZN", "WMT",  "COST", "MCD",  "NKE",
-    "JPM",  "BAC",  "GS",   "V",    "MA",
+    "HD",   "LOW",  "TGT",  "TJX",  "SBUX",
+    "CMG",  "F",    "GM",   "PG",   "KO",
+    "PEP",  "PM",   "CL",   "BKNG", "ABNB",
+    # Energy (10)
     "XOM",  "CVX",  "COP",  "SLB",  "EOG",
+    "PSX",  "VLO",  "MPC",  "OXY",  "HAL",
+    # Industrials (15)
     "CAT",  "HON",  "GE",   "UPS",  "BA",
+    "MMM",  "DE",   "EMR",  "ITW",  "PH",
+    "RTX",  "LMT",  "NOC",  "GD",   "FDX",
+    # Communication (10)
+    "DIS",  "NFLX", "CMCSA","TMUS", "T",
+    "VZ",   "CHTR", "PARA", "WBD",  "SNAP",
+    # Materials (5)
+    "LIN",  "APD",  "SHW",  "FCX",  "NEM",
+    # Utilities (5)
+    "NEE",  "DUK",  "SO",   "AEP",  "EXC",
 ]
 
 _SECTOR_MAP = {
+    # Technology
     "AAPL": "Technology",  "MSFT": "Technology",  "NVDA": "Technology",
-    "META": "Technology",  "INTC": "Technology",
+    "META": "Technology",  "INTC": "Technology",  "GOOGL": "Technology",
+    "TSLA": "Technology",  "AMD":  "Technology",  "QCOM": "Technology",
+    "AVGO": "Technology",  "TXN":  "Technology",  "CRM":  "Technology",
+    "ORCL": "Technology",  "ADBE": "Technology",  "CSCO": "Technology",
+    "IBM":  "Technology",  "NOW":  "Technology",  "AMAT": "Technology",
+    "MU":   "Technology",  "INTU": "Technology",
+    # Healthcare
     "JNJ":  "Healthcare",  "UNH":  "Healthcare",  "PFE":  "Healthcare",
-    "ABBV": "Healthcare",  "MRK":  "Healthcare",
+    "ABBV": "Healthcare",  "MRK":  "Healthcare",  "TMO":  "Healthcare",
+    "DHR":  "Healthcare",  "BMY":  "Healthcare",  "GILD": "Healthcare",
+    "AMGN": "Healthcare",  "CVS":  "Healthcare",  "MDT":  "Healthcare",
+    "SYK":  "Healthcare",  "ISRG": "Healthcare",  "ZTS":  "Healthcare",
+    # Consumer
     "AMZN": "Consumer",    "WMT":  "Consumer",    "COST": "Consumer",
-    "MCD":  "Consumer",    "NKE":  "Consumer",
-    "JPM":  "Financials",  "BAC":  "Financials",  "GS":   "Financials",
-    "V":    "Financials",  "MA":   "Financials",
+    "MCD":  "Consumer",    "NKE":  "Consumer",    "HD":   "Consumer",
+    "LOW":  "Consumer",    "TGT":  "Consumer",    "TJX":  "Consumer",
+    "SBUX": "Consumer",    "CMG":  "Consumer",    "F":    "Consumer",
+    "GM":   "Consumer",    "PG":   "Consumer",    "KO":   "Consumer",
+    "PEP":  "Consumer",    "PM":   "Consumer",    "CL":   "Consumer",
+    "BKNG": "Consumer",    "ABNB": "Consumer",
+    # Energy
     "XOM":  "Energy",      "CVX":  "Energy",      "COP":  "Energy",
-    "SLB":  "Energy",      "EOG":  "Energy",
+    "SLB":  "Energy",      "EOG":  "Energy",      "PSX":  "Energy",
+    "VLO":  "Energy",      "MPC":  "Energy",      "OXY":  "Energy",
+    "HAL":  "Energy",
+    # Industrials
     "CAT":  "Industrials", "HON":  "Industrials", "GE":   "Industrials",
-    "UPS":  "Industrials", "BA":   "Industrials",
+    "UPS":  "Industrials", "BA":   "Industrials", "MMM":  "Industrials",
+    "DE":   "Industrials", "EMR":  "Industrials", "ITW":  "Industrials",
+    "PH":   "Industrials", "RTX":  "Industrials", "LMT":  "Industrials",
+    "NOC":  "Industrials", "GD":   "Industrials", "FDX":  "Industrials",
+    # Communication
+    "DIS":  "Communication", "NFLX": "Communication", "CMCSA": "Communication",
+    "TMUS": "Communication", "T":    "Communication", "VZ":    "Communication",
+    "CHTR": "Communication", "PARA": "Communication", "WBD":   "Communication",
+    "SNAP": "Communication",
+    # Materials
+    "LIN":  "Materials",   "APD":  "Materials",   "SHW":  "Materials",
+    "FCX":  "Materials",   "NEM":  "Materials",
+    # Utilities
+    "NEE":  "Utilities",   "DUK":  "Utilities",   "SO":   "Utilities",
+    "AEP":  "Utilities",   "EXC":  "Utilities",
 }
 
-_EVAL_DCF_PARAMS = {
-    "discount_rate":   0.10,
+# Sector-based discount rates matching the UI tooltip guidance:
+# ~8% large stable blue-chips, ~10-12% cyclical/growth/mid-cap
+_SECTOR_DISCOUNT = {
+    "Technology":    0.10,
+    "Healthcare":    0.09,
+    "Consumer":      0.09,
+    "Energy":        0.11,
+    "Industrials":   0.10,
+    "Communication": 0.10,
+    "Materials":     0.10,
+    "Utilities":     0.08,
+}
+
+_EVAL_DCF_DEFAULTS = {
     "terminal_growth": 0.025,
     "years_projected": 5,
-    "growth_y1_3":     0.06,
-    "growth_y4_5":     0.04,
+    # growth_y1_3 and growth_y4_5 are computed per-ticker from FCF history
+    # fallbacks used when FCF history is insufficient
+    "growth_y1_3": 0.06,
+    "growth_y4_5": 0.04,
 }
 
 
@@ -824,51 +896,74 @@ def run_eval_and_export() -> tuple:
     ts = datetime.now(timezone.utc).isoformat()
 
     for ticker in _EVAL_TICKERS:
+        sector = _SECTOR_MAP.get(ticker, "Unknown")
         row = {
             "timestamp":       ts,
             "ticker":          ticker,
-            "sector":          _SECTOR_MAP.get(ticker, "Unknown"),
+            "sector":          sector,
             "live_price":      "",
             "dcf_fair_value":  "",
-            "analyst_target":  "",
+            "analyst_low":     "",
+            "analyst_high":    "",
             "dcf_verdict":     "",
-            "analyst_verdict": "",
-            "match":           "",
-            "discount_rate":   _EVAL_DCF_PARAMS["discount_rate"],
-            "terminal_growth": _EVAL_DCF_PARAMS["terminal_growth"],
-            "years_projected": _EVAL_DCF_PARAMS["years_projected"],
-            "growth_y1_3":     _EVAL_DCF_PARAMS["growth_y1_3"],
-            "growth_y4_5":     _EVAL_DCF_PARAMS["growth_y4_5"],
+            "in_range":        "",
+            "pct_above_high":  "",
+            "pct_below_low":   "",
+            "discount_rate":   _SECTOR_DISCOUNT.get(sector, 0.10),
+            "terminal_growth": _EVAL_DCF_DEFAULTS["terminal_growth"],
+            "years_projected": _EVAL_DCF_DEFAULTS["years_projected"],
+            "growth_y1_3":     _EVAL_DCF_DEFAULTS["growth_y1_3"],
+            "growth_y4_5":     _EVAL_DCF_DEFAULTS["growth_y4_5"],
             "note":            "",
         }
         try:
             yf_data = _fetch_yf(ticker)
             live_price     = yf_data["live_price"]
             analyst_target = yf_data["analyst_target"]
+            analyst_low    = yf_data["analyst_low"]
+            analyst_high   = yf_data["analyst_high"]
             fcf_history    = yf_data["fcf_history"] or []
             shares         = yf_data["shares_outstanding"]
             net_debt       = yf_data["net_debt"] or 0.0
 
             row["live_price"]     = round(live_price, 2)     if live_price     else ""
-            row["analyst_target"] = round(analyst_target, 2) if analyst_target else ""
-
-            av = _analyst_verdict(analyst_target, live_price)
-            row["analyst_verdict"] = av
+            row["analyst_low"]  = round(analyst_low, 2)  if analyst_low  else ""
+            row["analyst_high"]   = round(analyst_high, 2)   if analyst_high   else ""
 
             if len(fcf_history) < 3:
                 row["note"] = "Skipped: FCF history < 3 years"
             elif not live_price or not shares:
                 row["note"] = "Skipped: missing price or shares"
-            elif av == "MISSING":
+            elif analyst_target is None:
                 row["note"] = "Skipped: no analyst target"
+            elif sector == "Financials":
+                row["dcf_fair_value"] = None
+                row["dcf_verdict"]    = "N/A"
+                row["in_range"]       = "SKIP"
+                row["note"]           = "DCF not meaningful for banks — FCF concept does not apply"
             else:
+                # Use recommended rates: sector discount + FCF-derived growth rates
+                discount_rate = _SECTOR_DISCOUNT.get(sector, 0.10)
+                stats = _fcf_growth_stats(fcf_history)
+                growth_y1_3 = stats["suggested_near"] if stats else _EVAL_DCF_DEFAULTS["growth_y1_3"]
+                growth_y4_5 = stats["suggested_long"] if stats else _EVAL_DCF_DEFAULTS["growth_y4_5"]
+
+                row["discount_rate"] = discount_rate
+                row["growth_y1_3"]   = round(growth_y1_3, 4)
+                row["growth_y4_5"]   = round(growth_y4_5, 4)
+
                 dcf = calculate_dcf(
                     fcf_history=fcf_history,
                     shares_outstanding=shares,
                     net_debt=net_debt,
-                    **_EVAL_DCF_PARAMS,
+                    discount_rate=discount_rate,
+                    terminal_growth=_EVAL_DCF_DEFAULTS["terminal_growth"],
+                    years_projected=_EVAL_DCF_DEFAULTS["years_projected"],
+                    growth_y1_3=growth_y1_3,
+                    growth_y4_5=growth_y4_5,
                 )
                 fv = dcf["fair_value"]
+                dcf_fair_value = fv
                 row["dcf_fair_value"] = round(fv, 2)
 
                 if fv > live_price * 1.10:
@@ -879,7 +974,20 @@ def run_eval_and_export() -> tuple:
                     dcf_verdict = "FAIR"
 
                 row["dcf_verdict"] = dcf_verdict
-                row["match"]       = "YES" if dcf_verdict == av else "NO"
+
+                if analyst_low is None or analyst_high is None:
+                    row["in_range"] = "SKIP"
+                    row["note"] = "no analyst range"
+                elif analyst_low <= dcf_fair_value <= analyst_high:
+                    row["in_range"]       = "YES"
+                    row["pct_above_high"] = "In Range"
+                    row["pct_below_low"]  = "In Range"
+                elif dcf_fair_value < analyst_low:
+                    row["in_range"]      = "NO"
+                    row["pct_below_low"] = round((dcf_fair_value / analyst_low - 1) * 100, 2)
+                else:
+                    row["in_range"]       = "NO"
+                    row["pct_above_high"] = round((dcf_fair_value / analyst_high - 1) * 100, 2)
 
         except Exception as e:
             row["note"] = f"Error: {e}"
@@ -893,16 +1001,25 @@ def run_eval_and_export() -> tuple:
         writer.writerows(rows)
 
     # Compute summary
-    valid = [r for r in rows if r["match"] in ("YES", "NO")]
-    n_match = sum(1 for r in valid if r["match"] == "YES")
-    accuracy = n_match / len(valid) if valid else 0
+    scored    = [r for r in rows if r["in_range"] in ("YES", "NO")]
+    n_in      = sum(1 for r in rows if r["in_range"] == "YES")
+    n_below   = sum(1 for r in rows if r["in_range"] == "NO" and r["pct_below_low"] != "")
+    n_above   = sum(1 for r in rows if r["in_range"] == "NO" and r["pct_above_high"] != "")
+    n_skipped = len(rows) - len(scored)
+
+    print(f"Total scored:      {len(scored)}")
+    print(f"In range (YES):    {n_in}")
+    print(f"Below range:       {n_below}")
+    print(f"Above range:       {n_above}")
+    print(f"Skipped:           {n_skipped}")
 
     summary = {
         "total":    len(rows),
-        "scored":   len(valid),
-        "skipped":  len(rows) - len(valid),
-        "matched":  n_match,
-        "accuracy": accuracy,
+        "scored":   len(scored),
+        "in_range": n_in,
+        "below":    n_below,
+        "above":    n_above,
+        "skipped":  n_skipped,
         "path":     EVAL_LOG_PATH,
     }
     return rows, summary
