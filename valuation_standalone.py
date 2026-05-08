@@ -145,6 +145,99 @@ _SECTOR_DISCOUNT = {
 # Main
 # ---------------------------------------------------------------------------
 
+_DEFAULT_TICKERS = ["AAPL", "MSFT", "NKE", "PFE", "XOM"]
+
+
+def run_ticker(ticker: str, discount_rate: Optional[float], terminal_growth: float, years: int):
+    ticker = ticker.upper()
+    print(f"\n{'='*55}")
+    print(f"  DCF Valuation — {ticker}")
+    print(f"{'='*55}")
+
+    print("  Fetching live data from yfinance...")
+    data = fetch_yf(ticker)
+
+    live_price   = data["live_price"]
+    analyst_low  = data["analyst_low"]
+    analyst_high = data["analyst_high"]
+    shares       = data["shares_outstanding"]
+    net_debt     = data["net_debt"]
+    fcf_history  = data["fcf_history"]
+
+    if not live_price:
+        print("  ERROR: Could not fetch live price. Check the ticker and try again.")
+        return
+    if len(fcf_history) < 3:
+        print(f"  SKIP: Fewer than 3 years of FCF history.")
+        return
+    if not shares:
+        print(f"  SKIP: Shares outstanding not available.")
+        return
+
+    print(f"  Live price:        ${live_price:,.2f}")
+    if analyst_low and analyst_high:
+        print(f"  Analyst range:     ${analyst_low:,.2f} – ${analyst_high:,.2f}")
+    else:
+        print("  Analyst range:     not available")
+
+    stats       = _fcf_growth_stats(fcf_history)
+    growth_y1_3 = stats["suggested_near"] if stats else 0.06
+    growth_y4_5 = stats["suggested_long"] if stats else 0.04
+    discount    = (discount_rate / 100) if discount_rate else 0.10
+    terminal    = terminal_growth / 100
+
+    print(f"\n  --- DCF Assumptions ---")
+    print(f"  Discount rate:     {discount:.1%}")
+    print(f"  Terminal growth:   {terminal:.1%}")
+    print(f"  Years projected:   {years}")
+    print(f"  FCF growth y1-3:   {growth_y1_3:.1%}  (from historical CAGR)")
+    print(f"  FCF growth y4+:    {growth_y4_5:.1%}  (from historical CAGR)")
+
+    try:
+        result     = calculate_dcf(fcf_history, shares, net_debt, discount, terminal, years, growth_y1_3, growth_y4_5)
+        fair_value = result["fair_value"]
+    except ValueError as e:
+        print(f"\n  ERROR: {e}")
+        return
+
+    pct_vs_price = (fair_value / live_price - 1) * 100
+    if fair_value > live_price * 1.10:
+        verdict = "UNDERVALUED"
+    elif fair_value < live_price * 0.90:
+        verdict = "OVERVALUED"
+    else:
+        verdict = "FAIRLY VALUED"
+
+    print(f"\n  --- Results ---")
+    print(f"  DCF fair value:    ${fair_value:,.2f}  ({pct_vs_price:+.1f}% vs current price)")
+    print(f"  Verdict:           {verdict}")
+
+    if analyst_low and analyst_high:
+        if analyst_low <= fair_value <= analyst_high:
+            range_result = "YES — within analyst range"
+        elif fair_value < analyst_low:
+            pct_below = (fair_value / analyst_low - 1) * 100
+            range_result = f"NO — {pct_below:.1f}% below analyst low (${analyst_low:,.2f})"
+        else:
+            pct_above = (fair_value / analyst_high - 1) * 100
+            range_result = f"NO — {pct_above:+.1f}% above analyst high (${analyst_high:,.2f})"
+        print(f"  In analyst range:  {range_result}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Standalone DCF valuation tool")
+    parser.add_argument("--ticker",          default=None,        help="US stock ticker (e.g. AAPL). Omit to run default 5 tickers.")
+    parser.add_argument("--discount_rate",   type=float, default=None, help="WACC %% (default: 10)")
+    parser.add_argument("--terminal_growth", type=float, default=2.5,  help="Terminal growth rate %% (default: 2.5)")
+    parser.add_argument("--years",           type=int,   default=5,    help="Years projected (default: 5)")
+    args = parser.parse_args()
+
+    tickers = [args.ticker] if args.ticker else _DEFAULT_TICKERS
+    for ticker in tickers:
+        run_ticker(ticker, args.discount_rate, args.terminal_growth, args.years)
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Standalone DCF valuation tool")
     parser.add_argument("--ticker",          required=True,       help="US stock ticker, e.g. AAPL")
